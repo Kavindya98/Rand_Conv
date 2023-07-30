@@ -1,0 +1,1 @@
+"python train_digits.py --net digit -ni 10000 -vi 250 -bs 32 -lr 0.0001 -sc mnist10k -chs 3 -rc -vwr -nv 1"
