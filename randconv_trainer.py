@@ -69,6 +69,11 @@ def add_basic_args(parser):
                         help='resize input image size, -1 means keep original size')
     parser.add_argument('--n_classes', '-nc', type=int, default=10,
                             help='number of classes')
+    parser.add_argument('--rp1', action='store_true', help='if random projection')
+    parser.add_argument('--rp2', action='store_true', help='if random projection')
+    parser.add_argument('--rp1_out_channel', default=0, type=int, help='number of rp1 output channels')
+    parser.add_argument('--rp2_out_channel', default=0, type=int, help='number of rp2 output channels')
+    parser.add_argument('--rp_weight_decay', default=5e-4, type=float)
 
 def add_rand_layer_args(parser):
     parser.add_argument('--rand_conv', '-rc', action='store_true', help='use random layers')
@@ -250,7 +255,7 @@ class RandCNN:
                                   weight_decay=weight_decay, nesterov=nesterov)
         else:
             print("Using Adam optimizer")
-            optimizer = optim.Adam(paras, lr=lr)
+            optimizer = optim.Adam(paras, lr=lr,weight_decay=weight_decay)
 
         if scheduler_name == 'StepLR':
             scheduler = optim.lr_scheduler.StepLR(optimizer=optimizer, step_size=step_size,
@@ -290,7 +295,7 @@ class RandCNN:
 
         # get the random conv layers and trainable parameters
         self.paras = []
-
+        rp = False
         net = net.to(self.device)
         if self.args.freeze_feature:
             self.paras += list(net.classifier.parameters())
@@ -299,6 +304,19 @@ class RandCNN:
                 self.paras += list(net_paras)
             else:
                 self.paras += [{'params': net.parameters()}]
+        if self.args.rp1 or self.args.rp2: 
+            self.paras = []         
+            for name, param in net.named_parameters():
+                if 'rp_conv' in name:
+                    self.paras.append({'params': param, 'weight_decay': self.args.rp_weight_decay})
+                else:
+                    self.paras.append({'params': param})
+            lr_steps = self.args.n_epoch
+            self.args.milestones = [lr_steps / 2, lr_steps * 3 / 4]
+            self.args.gamma = 0.1  
+            self.args.scheduler = 'MultiStepLR'
+            self.args.weight_decay = 5e-4
+            rp = True
 
         if self.args.rand_conv:
             print("\n=========Set Up Rand layers=========")
@@ -323,12 +341,13 @@ class RandCNN:
 
 
             for epoch in trange(start_epoch, self.args.n_epoch, leave=True):
+
                 self.train_one_epoch(epoch, net, self.device, trainloaders, self.criterion, optimizer, self.args,
-                                          self.invariant_criterion, scheduler)
+                                          self.invariant_criterion, scheduler,rp)
 
                 #  validation
                 source_metric, target_metric = self.validate(epoch, net, self.device, validloaders,
-                                                self.args.n_val if self.args.val_with_rand else 1,  optimizer)
+                                                self.args.n_val if self.args.val_with_rand else 1,  optimizer,rp=rp)
 
                 print("Source {}: {}, Best Source {}: {}, target {}: {}, Best target {}: {}".format(self.metric_name, source_metric, self.metric_name, self.best_metric, self.metric_name, target_metric, self.metric_name, self.best_target_metric))
                 if scheduler is not None and self.args.scheduler != 'CosLR':
@@ -340,14 +359,16 @@ class RandCNN:
     def run_testing(self, net, testloaders):
         print("\n=========Testing=========")
         self.resume_model(net, test_latest=self.args.test_latest, test_target=self.args.test_target)
-
-        self.test(net, testloaders)
+        rp=False
+        if self.args.rp1 or self.args.rp2:
+            rp=True
+        self.test(net, testloaders,rp)
         self.print_now()
 
     # Training one epoch
     # @staticmethod
     def train_one_epoch(self, epoch, net, device, trainloaders, criterion, optimizer, args, invariant_criterion=None,
-                        scheduler=None):
+                        scheduler=None,rp=False):
         net.train()
         train_loss = 0
         train_inv_loss = 0
@@ -380,6 +401,8 @@ class RandCNN:
                         inputs = self.multi_augment(inputs)
                     else:
                         inputs = self.multi_augment(self.rand_module(inputs))
+                    if rp:
+                        net.random_rp_matrix()
                     outputs = net(inputs)
                     loss += criterion(outputs, targets)
 
@@ -439,7 +462,7 @@ class RandCNN:
 
 
 
-    def infer(self, net, device, testloader, criterion=None, with_rand=False, n_eval=1, name='', label_collection=None):
+    def infer(self, net, device, testloader, criterion=None, with_rand=False, n_eval=1, name='', label_collection=None,rp=False):
         """
         base function for validation/testing with options of repeat multiple runs
         """
@@ -462,6 +485,8 @@ class RandCNN:
 
                     pred_batchs = []
                     for i in range(n_eval):
+                        if rp:
+                            net.random_rp_matrix()
                         if with_rand and self.rand_module is not None:
                             self.rand_module.randomize()
                             outputs = net(self.multi_augment(self.rand_module(inputs)))
@@ -489,7 +514,7 @@ class RandCNN:
 
         return metric_meter.avg*100, test_loss / (batch_idx + 1)
 
-    def validate(self, epoch, net, device, validloaders, n_eval=1, optimizer=None):
+    def validate(self, epoch, net, device, validloaders, n_eval=1, optimizer=None,rp=False):
         """"""
         if not isinstance(validloaders, dict) and not isinstance(validloaders, list):
             validloaders = [validloaders]
@@ -506,9 +531,9 @@ class RandCNN:
                     loader = validloaders[name]
                 else:
                     name = None
-
+                
                 metric_temp, loss_temp = self.infer(net, device, loader, self.criterion, with_rand=self.args.val_with_rand,
-                                                     n_eval=n_eval, name=name)
+                                                     n_eval=n_eval, name=name, rp=rp)
 
                 if name is not None and name in self.args.source:
                     source_metrics.append(metric_temp)
@@ -563,7 +588,7 @@ class RandCNN:
 
         return source_metric, target_metric
 
-    def test(self, net, testloaders):
+    def test(self, net, testloaders,rp=False):
 
         metrics = {name: 0 for name in testloaders.keys()}
         with tqdm(testloaders.items(), leave=False, desc='Domains: ') as d_iter:
@@ -578,7 +603,7 @@ class RandCNN:
                 else:
                     labels = None
 
-                metric, _ = self.infer(net, self.device, loader, name=name, label_collection=labels)
+                metric, _ = self.infer(net, self.device, loader, name=name, label_collection=labels,rp=rp)
                 metrics[name] = metric
                 d_iter.set_postfix_str("Domain {}: {} {:.3f}".format(name, self.metric_name, metric))
                 if self.args.save_embedding:

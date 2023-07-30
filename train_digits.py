@@ -15,6 +15,7 @@ from lib.datasets.transforms import GreyToColor, IdentityTransform, ToGrayScale,
 
 from randconv_trainer import *
 from lib.networks import get_network
+from lib.networks.lenet import LeNet
 
 def main(args):
     print("Random Seed: ", args.rand_seed)
@@ -83,7 +84,11 @@ def main(args):
 
     # Model
     print("\n=========Building Model=========")
-    net = get_network(args.net, num_classes=args.n_classes, pretrained=args.pretrained)
+    if args.net == 'Lenet':
+        net = LeNet(num_classes=10, rp_1=args.rp1, rp1_out_channel=args.rp1_out_channel,
+                    rp_2=args.rp2, rp2_out_channel=args.rp2_out_channel)
+    else:    
+        net = get_network(args.net, num_classes=args.n_classes, pretrained=args.pretrained)
     trainer = RandCNN(args)
     trainer.train(net, trainloaders, validloaders, testloaders=None, data_mean=(0.5, 0.5, 0.5), data_std=((0.5, 0.5, 0.5)))
 
@@ -96,7 +101,7 @@ def main(args):
     else:
         testdata = {d: get_dataset(d, root=data_dir, train=False, download=True, transform=train_transform) for d in domains}
         testloaders = {d: torch.utils.data.DataLoader(testdata[d], batch_size=256, shuffle=False, num_workers=2) for d in domains}
-
+    
     trainer.run_testing(net, testloaders)
 
 if __name__ == '__main__':

@@ -7,9 +7,11 @@ from .digit_net import DigitNet
 from .alexnet import alexnet
 from .vgg import get_vgg
 from . import resnet
+from .lenet import LeNet
 network_map = {
     'alexnet': alexnet,
     'digit': DigitNet,
+    'lenet':LeNet,
 }
 for _name in resnet.__all__:
     network_map[_name] = resnet.__dict__[_name]
